@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse  # 导入 argparse 模块
 from multiprocessing import Process
 import torch
@@ -18,7 +19,7 @@ def run_script(rank, all_ranks, input_file, output_dir, resolution, tokenizer_pa
     os.makedirs(output_dir, exist_ok=True)
 
     # 3. 更新 os.system 命令，直接使用传入的完整路径
-    command = (f"python -u pre_tokenize_action_state_local.py "
+    command = (f"{sys.executable} -u pre_tokenize_action_state_local.py "
                f"--splits={all_ranks} "
                f"--rank={rank} "
                f"--in_filename {input_file} "
