@@ -50,7 +50,8 @@ if __name__ == "__main__":
 
     # 4. 移除 data_type 循环，直接使用命令行参数
     processes = []
-    all_ranks = 32  # 总进程数
+    num_gpus = torch.cuda.device_count()
+    all_ranks = max(1, num_gpus * 4)  # 4 workers per GPU keeps VRAM headroom
     for i in range(all_ranks):
         # 5. 将解析到的新参数传递给 run_script 函数
         p = Process(target=run_script, args=(i, all_ranks, args.input_file, args.output_dir, args.resolution, args.tokenizer_path))
