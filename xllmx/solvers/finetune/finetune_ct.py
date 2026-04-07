@@ -29,7 +29,11 @@ from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from transformers import GenerationConfig, TextStreamer
-from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList, LogitsWarper
+from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList
+try:
+    from transformers.generation.logits_process import LogitsWarper
+except ImportError:
+    LogitsWarper = LogitsProcessor
 from data.item_processor import FlexARItemProcessor
 import transformers
 

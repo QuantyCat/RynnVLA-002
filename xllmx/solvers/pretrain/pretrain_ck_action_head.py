@@ -29,7 +29,11 @@ from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from transformers import GenerationConfig, TextStreamer
-from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList, LogitsWarper
+from transformers.generation.logits_process import LogitsProcessor, LogitsProcessorList
+try:
+    from transformers.generation.logits_process import LogitsWarper
+except ImportError:
+    LogitsWarper = LogitsProcessor
 from data.item_processor import FlexARItemProcessor, FlexARItemProcessor_Action, FlexARItemProcessor_Action_State
 from data.pre_tokenize_action import ItemProcessor
 from data.dataset import LiberoFinetuneConversation
@@ -51,6 +55,32 @@ import xllmx.util as util
 import xllmx.util.lr_sched as lr_sched
 import xllmx.util.misc as misc
 from xllmx.util.tensor_type import promote_param_to_fp32
+
+
+class SingleGPUWrapper(nn.Module):
+    """
+    Thin wrapper that mimics the FSDP API for single-GPU training.
+    Bypasses FSDP entirely to avoid flat-parameter NaN issues that only
+    occur under FSDP with use_orig_params=True on a single device.
+    """
+    def __init__(self, module: nn.Module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+    def no_sync(self):
+        return contextlib.nullcontext()
+
+    def clip_grad_norm_(self, max_norm: float):
+        return torch.nn.utils.clip_grad_norm_(self.module.parameters(), max_norm)
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
 
 
 class PretrainSolverBase_ck_action_head(ABC):
@@ -310,12 +340,12 @@ class PretrainSolverBase_ck_action_head(ABC):
         if hasattr(unwrapped_model, "get_trainable_params"):
             trainable_params = dict(unwrapped_model.get_trainable_params())
             for key, param in unwrapped_model.named_parameters():
-                if key in trainable_params or 'lora' in key:
+                if key in trainable_params or 'lora' in key or 'action_head' in key:
                     param.requires_grad = True
-                    promote_param_to_fp32(param)
+                    # Keep in bf16 — FSDP requires uniform dtype per module
                 else:
                     param.requires_grad = False
-                    promote_param_to_fp32(param)
+                    # Keep frozen params in bf16
                     # keep_fp32_keywords = ["norm", "lm_head", "embed_tokens"]
                     # if any([_ in key for _ in keep_fp32_keywords]):
                     #     promote_param_to_fp32(param)
@@ -326,10 +356,15 @@ class PretrainSolverBase_ck_action_head(ABC):
                 f"model class {type(unwrapped_model)} does not have `get_trainable_params` method,"
                 f"set all params to trainable"
             )
+            is_lora = any('lora' in k for k, _ in unwrapped_model.named_parameters())
             for key, param in unwrapped_model.named_parameters():
-                param.requires_grad = True
-                param.requires_grad = True
-                promote_param_to_fp32(param)
+                if is_lora:
+                    # LoRA mode: peft already set requires_grad — keep everything in bf16 for FSDP
+                    pass  # requires_grad already correctly set by peft + action_head manual override
+                else:
+                    # Full fine-tune: make everything trainable in fp32
+                    param.requires_grad = True
+                    promote_param_to_fp32(param)
 
         self.logger.info("Finish instantiating unwrapped model.")
         self.logger.info(f"Unwrapped model: \n{str(unwrapped_model)}")
@@ -413,13 +448,45 @@ class PretrainSolverBase_ck_action_head(ABC):
     def _make_and_save_starting_point(self, save_path: str):
         raise NotImplementedError(f"{self.__class__} has not implemented _make_and_save_starting_point()")
 
-    def setup_fsdp_sync(self, model: nn.Module, data_parallel: str, precision: str, grad_precision: Optional[str]) -> FSDP:
+    def setup_fsdp_sync(self, model: nn.Module, data_parallel: str, precision: str, grad_precision: Optional[str]) -> nn.Module:
+
+        if self.dp_world_size == 1:
+            # Single-GPU: bypass FSDP entirely. FSDP with use_orig_params=True
+            # introduces flat-parameter NaN issues that don't occur without it,
+            # and provides no benefit on a single device.
+            #
+            # Remove any accelerate dispatch hooks that from_pretrained may have
+            # attached (device_map= triggers hook attachment in some accelerate versions).
+            try:
+                from accelerate.hooks import remove_hook_from_module
+                remove_hook_from_module(model, recurse=True)
+            except (ImportError, Exception):
+                pass
+            # Model is already on CUDA (loaded with device_map="cuda" for single GPU).
+            # Ensure CUDA sync before wrapping.
+            torch.cuda.synchronize()
+            return SingleGPUWrapper(model)
 
         if self.dp_rank == 0:
             param_init_fn = None
         else:
             param_init_fn = lambda x: x.to_empty(device=torch.cuda.current_device(), recurse=False)
-        
+
+        mixed_precision_param_dtype = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "tf32": None,
+        }.get(precision)
+        mp_policy = (
+            MixedPrecision(
+                param_dtype=mixed_precision_param_dtype,
+                reduce_dtype=torch.float32,
+                buffer_dtype=mixed_precision_param_dtype,
+            )
+            if mixed_precision_param_dtype is not None
+            else None
+        )
+
         model = FSDP(
             model,
             auto_wrap_policy=functools.partial(
@@ -427,30 +494,13 @@ class PretrainSolverBase_ck_action_head(ABC):
                 lambda_fn=lambda m: m in model.get_fsdp_wrap_module_list(),
             ),
             process_group=fs_init.get_data_parallel_group(),
-            sharding_strategy={
-                "fsdp": ShardingStrategy.FULL_SHARD,
-                "sdp": ShardingStrategy.SHARD_GRAD_OP,
-            }[data_parallel],
-            mixed_precision=MixedPrecision(
-                param_dtype={
-                    "fp32": torch.float,
-                    "tf32": torch.float,
-                    "bf16": torch.bfloat16,
-                    "fp16": torch.float16,
-                }[precision],
-                reduce_dtype={
-                    "fp32": torch.float,
-                    "tf32": torch.float,
-                    "bf16": torch.bfloat16,
-                    "fp16": torch.float16,
-                }[grad_precision or precision],
-            ),
+            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            mixed_precision=mp_policy,
             device_id=torch.cuda.current_device(),
             sync_module_states=True,
             limit_all_gathers=True,
             use_orig_params=True,
-            param_init_fn=param_init_fn
-
+            param_init_fn=param_init_fn,
         )
         torch.cuda.synchronize()
 
@@ -1008,7 +1058,7 @@ class PretrainSolverBase_ck_action_head(ABC):
         accum_iter = self.args.accum_iter
         accum_counter = 0
 
-        loss_weights = torch.ones(65536)
+        loss_weights = torch.ones(65536, device=torch.cuda.current_device())
         # loss_weights[3:8195] = 0.04
         print('------------self.args.loss_img_weights', self.args.loss_img_weights)
         loss_weights[3:8195] = self.args.loss_img_weights
@@ -1068,7 +1118,7 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct  = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct  = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=False)
 
             # if loss_ct == 0:
             #     print('2222222222222', c_loss, loss_ct)
@@ -1362,7 +1412,7 @@ class PretrainSolverBase_ck_action_head(ABC):
         header = "Epoch: [{}]".format(epoch)
         print_freq = 10  # todo arg
 
-        loss_weights = torch.ones(65536)
+        loss_weights = torch.ones(65536, device=torch.cuda.current_device())
         loss_weights[3:8195] = 0.04
 
         for data_iter_step, batch_data in enumerate(
@@ -1584,7 +1634,7 @@ class PretrainSolverBase_ck_action_head(ABC):
         header = "Epoch: [{}]".format(epoch)
         print_freq = 10  # todo arg
 
-        loss_weights = torch.ones(65536)
+        loss_weights = torch.ones(65536, device=torch.cuda.current_device())
         loss_weights[3:8195] = 0.04
 
         for data_iter_step, batch_data in enumerate(

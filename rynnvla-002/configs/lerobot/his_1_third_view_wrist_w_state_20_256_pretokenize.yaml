@@ -1,2 +1,2 @@
 META:
-  - path: '/mnt/damorobot/cenjun/lerobot_data/concate_tokens/lerobot_all.json'
+  - path: '$HOME/quantycat-positronic/my_data/training_pipeline/tokens/vla_data/record.json'

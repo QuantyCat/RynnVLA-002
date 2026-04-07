@@ -285,9 +285,17 @@ class ChameleonAttention(nn.Module):
                 base=self.rope_theta,
             )
         else:
-            scaling_type = self.config.rope_scaling["type"]
-            scaling_factor = self.config.rope_scaling["factor"]
-            if scaling_type == "linear":
+            # Support both old ("type") and new ("rope_type") transformers key format
+            # "default" means no scaling — treat like rope_scaling is None
+            scaling_type = self.config.rope_scaling.get("type") or self.config.rope_scaling.get("rope_type", "linear")
+            scaling_factor = self.config.rope_scaling.get("factor", 1.0)
+            if scaling_type == "default":
+                self.rotary_emb = ChameleonRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == "linear":
                 self.rotary_emb = ChameleonLinearScalingRotaryEmbedding(
                     self.head_dim,
                     max_position_embeddings=self.max_position_embeddings,
@@ -1336,7 +1344,7 @@ class ChameleonModel(ChameleonPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for _layer_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1604,7 +1612,8 @@ class ChameleonForConditionalGeneration(ChameleonPreTrainedModel):
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            # Cast to float32 for numerically stable loss over large vocabulary in bf16 training
+            loss = loss_fct(shift_logits.float(), shift_labels)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

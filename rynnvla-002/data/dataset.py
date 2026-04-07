@@ -14,7 +14,10 @@ import torch.distributed as dist
 from torch.utils.data import Dataset
 import yaml
 
-from libero.libero import benchmark
+try:
+    from libero.libero import benchmark
+except ImportError:
+    benchmark = None  # libero not installed — only needed for LIBERO simulation, not lerobot fine-tuning
 from PIL import Image
 import numpy as np
 

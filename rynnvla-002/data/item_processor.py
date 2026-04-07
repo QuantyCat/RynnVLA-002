@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import random
 from typing import Dict, List
 import numpy as np
@@ -88,12 +89,12 @@ class FlexARItemProcessor(MMConvItemProcessor):
         #  currently still use the original image tokenizer provided by Meta rather than transformers
         #  because the transformers implementation does not contain the vae decoder
         self.chameleon_ori_vocab = chameleon_vae_ori.VocabInfo(
-            json.load(open("../ckpts/chameleon/tokenizer/text_tokenizer.json", encoding="utf8"))["model"]["vocab"]
+            json.load(open(os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "text_tokenizer.json"), encoding="utf8"))["model"]["vocab"]
         )
         self.chameleon_ori_translation = chameleon_vae_ori.VocabTranslation(self.chameleon_ori_vocab, device="cuda")
         self.chameleon_ori_image_tokenizer = chameleon_vae_ori.ImageTokenizer(
-            cfg_path="../ckpts/chameleon/tokenizer/vqgan.yaml",
-            ckpt_path="../ckpts/chameleon/tokenizer/vqgan.ckpt",
+            cfg_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.yaml"),
+            ckpt_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.ckpt"),
             device="cuda",
         )
 
@@ -234,12 +235,12 @@ class FlexARItemProcessor_Action(MMConvItemProcessor):
         #  currently still use the original image tokenizer provided by Meta rather than transformers
         #  because the transformers implementation does not contain the vae decoder
         self.chameleon_ori_vocab = chameleon_vae_ori.VocabInfo(
-            json.load(open("../ckpts/chameleon/tokenizer/text_tokenizer.json", encoding="utf8"))["model"]["vocab"]
+            json.load(open(os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "text_tokenizer.json"), encoding="utf8"))["model"]["vocab"]
         )
         self.chameleon_ori_translation = chameleon_vae_ori.VocabTranslation(self.chameleon_ori_vocab, device="cuda")
         self.chameleon_ori_image_tokenizer = chameleon_vae_ori.ImageTokenizer(
-            cfg_path="../ckpts/chameleon/tokenizer/vqgan.yaml",
-            ckpt_path="../ckpts/chameleon/tokenizer/vqgan.ckpt",
+            cfg_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.yaml"),
+            ckpt_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.ckpt"),
             device="cuda",
         )
         
@@ -434,12 +435,12 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         #  currently still use the original image tokenizer provided by Meta rather than transformers
         #  because the transformers implementation does not contain the vae decoder
         self.chameleon_ori_vocab = chameleon_vae_ori.VocabInfo(
-            json.load(open("../ckpts/chameleon/tokenizer/text_tokenizer.json", encoding="utf8"))["model"]["vocab"]
+            json.load(open(os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "text_tokenizer.json"), encoding="utf8"))["model"]["vocab"]
         )
         self.chameleon_ori_translation = chameleon_vae_ori.VocabTranslation(self.chameleon_ori_vocab, device=device)
         self.chameleon_ori_image_tokenizer = chameleon_vae_ori.ImageTokenizer(
-            cfg_path="../ckpts/chameleon/tokenizer/vqgan.yaml",
-            ckpt_path="../ckpts/chameleon/tokenizer/vqgan.ckpt",
+            cfg_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.yaml"),
+            ckpt_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.ckpt"),
             device=device,
         )
         
@@ -660,12 +661,12 @@ class FlexARItemProcessor_Action_FAST(MMConvItemProcessor):
         #  currently still use the original image tokenizer provided by Meta rather than transformers
         #  because the transformers implementation does not contain the vae decoder
         self.chameleon_ori_vocab = chameleon_vae_ori.VocabInfo(
-            json.load(open("./ckpts/chameleon/tokenizer/text_tokenizer.json", encoding="utf8"))["model"]["vocab"]
+            json.load(open(os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "text_tokenizer.json"), encoding="utf8"))["model"]["vocab"]
         )
         self.chameleon_ori_translation = chameleon_vae_ori.VocabTranslation(self.chameleon_ori_vocab, device="cuda")
         self.chameleon_ori_image_tokenizer = chameleon_vae_ori.ImageTokenizer(
-            cfg_path="./ckpts/chameleon/tokenizer/vqgan.yaml",
-            ckpt_path="./ckpts/chameleon/tokenizer/vqgan.ckpt",
+            cfg_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.yaml"),
+            ckpt_path=os.path.join(os.path.dirname(__file__), "..", "ckpts", "chameleon", "tokenizer", "vqgan.ckpt"),
             device="cuda",
         )
         

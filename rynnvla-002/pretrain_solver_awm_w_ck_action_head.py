@@ -1,12 +1,70 @@
+import math
 import pickle
 from typing import List, Tuple
 
 from accelerate import init_empty_weights
 import torch
+import torch.nn as nn
 
 from model import ChameleonXLLMXConfig, ChameleonXLLMXForConditionalGeneration_ck_action_head
 from xllmx.data.item_processor import ItemProcessorBase
 from xllmx.solvers.pretrain import PretrainSolverBase_ck_action_head
+
+
+def add_lora_to_model(model: nn.Module, lora_r: int, lora_alpha: int,
+                      target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+                      lora_dropout: float = 0.05,
+                      dtype=torch.bfloat16) -> None:
+    """
+    Add LoRA parameters directly to target nn.Linear modules.
+    Avoids peft's module-wrapping approach which is incompatible with FSDP use_orig_params=True.
+    Parameters are added via register_parameter so FSDP will correctly shard/gather them.
+    """
+    lora_scaling = lora_alpha / lora_r
+    dropout_layer = nn.Dropout(p=lora_dropout) if lora_dropout > 0 else None
+
+    for name, module in model.named_modules():
+        module_leaf = name.split(".")[-1]
+        if not isinstance(module, nn.Linear) or module_leaf not in target_modules:
+            continue
+
+        in_features = module.weight.shape[1]
+        out_features = module.weight.shape[0]
+        param_device = module.weight.device  # keep LoRA on same device as the layer
+
+        # LoRA A: initialized with Kaiming uniform, scaled down
+        lora_A = nn.Parameter(torch.empty(lora_r, in_features, dtype=dtype, device=param_device))
+        nn.init.kaiming_uniform_(lora_A, a=math.sqrt(5))
+        module.register_parameter("lora_weight_A", lora_A)
+
+        # LoRA B: initialized to zeros so LoRA starts as identity
+        lora_B = nn.Parameter(torch.zeros(out_features, lora_r, dtype=dtype, device=param_device))
+        module.register_parameter("lora_weight_B", lora_B)
+
+        module._lora_scaling = lora_scaling
+        module._lora_dropout = dropout_layer
+
+    # Register forward hooks after all parameters are added
+    def make_lora_hook():
+        def lora_hook(module, input, output):
+            if not hasattr(module, "lora_weight_A"):
+                return output
+            x = input[0]
+            if module._lora_dropout is not None and module.training:
+                x_drop = module._lora_dropout(x)
+            else:
+                x_drop = x
+            lora_out = (x_drop @ module.lora_weight_A.T) @ module.lora_weight_B.T
+            return output + lora_out * module._lora_scaling
+        return lora_hook
+
+    for name, module in model.named_modules():
+        if hasattr(module, "lora_weight_A"):
+            module.register_forward_hook(make_lora_hook())
+
+    # Freeze everything, then unfreeze LoRA and action_head
+    for name, param in model.named_parameters():
+        param.requires_grad = "lora_weight_" in name or "action_head" in name
 
 
 class ItemProcessor(ItemProcessorBase):
@@ -55,6 +113,8 @@ class Solver(PretrainSolverBase_ck_action_head):
         parser.add_argument("--with_world_model", action='store_true')
         parser.add_argument("--resolution", type=int, default=256, choices=[256, 512])
         parser.add_argument("--tokenizer_path", type=str, default="../ckpts/models--Alpha-VLLM--Lumina-mGPT-7B-768/snapshots/9624463a82ea5ce814af9b561dcd08a31082c3af")
+        parser.add_argument("--lora_r", type=int, default=0, help="LoRA rank (0 = disabled, use full fine-tuning)")
+        parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA scaling factor")
         return parser
 
     def _model_func(
@@ -66,6 +126,10 @@ class Solver(PretrainSolverBase_ck_action_head):
         # Other ranks will receive the model weights from rank0 during FSDP wrapping (through `sync_module_states`)
         # See https://github.com/pytorch/pytorch/issues/105840
         if self.dp_rank == 0:
+            # For single-GPU training (dp_world_size == 1), load directly to CUDA to avoid
+            # bf16 numerical instability observed when loading to CPU and then moving with .to().
+            # For multi-GPU, keep CPU loading so FSDP can sync weights across ranks.
+            _device_map = "cuda" if self.dp_world_size == 1 else "cpu"
             model = ChameleonXLLMXForConditionalGeneration_ck_action_head.from_pretrained(
                 init_from,
                 action_dim=self.args.action_dim,
@@ -75,7 +139,7 @@ class Solver(PretrainSolverBase_ck_action_head):
                 dropout=self.args.dropout,
                 z_loss_weight=self.args.z_loss_weight,
                 torch_dtype=torch.bfloat16,
-                device_map="cpu",
+                device_map=_device_map,
             )
         else:
             with init_empty_weights():
@@ -92,6 +156,16 @@ class Solver(PretrainSolverBase_ck_action_head):
                 model = ChameleonXLLMXForConditionalGeneration_ck_action_head(config)
 
         del model.model.vqmodel
+
+        if self.dp_rank == 0 and getattr(self.args, "lora_r", 0) > 0:
+            add_lora_to_model(
+                model,
+                lora_r=self.args.lora_r,
+                lora_alpha=self.args.lora_alpha,
+                target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+                lora_dropout=0.05,
+                dtype=torch.bfloat16,
+            )
 
         return model, None
 

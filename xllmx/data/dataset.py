@@ -59,7 +59,7 @@ class FinetuneConversationDataset(Dataset):
         if "type" not in meta:
             meta["type"] = "default"
 
-        meta_path, meta_type = meta["path"], meta["type"]
+        meta_path, meta_type = os.path.expandvars(os.path.expanduser(meta["path"])), meta["type"]
         meta_ext = os.path.splitext(meta_path)[-1]
         if meta_ext == ".json":
             with open(meta_path) as f:

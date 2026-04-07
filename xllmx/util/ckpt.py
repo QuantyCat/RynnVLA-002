@@ -65,50 +65,64 @@ def save(
     os.makedirs(save_dir, exist_ok=True)
 
     # save model
-    with FSDP.state_dict_type(
-        model,
-        StateDictType.FULL_STATE_DICT,
-        FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
-    ):
-        # run saving in separate functions to save memory
-        def _save_model():
-            save_dtype = {
-                "fp16": torch.float16,
-                "bf16": torch.bfloat16,
-                "tf32": torch.float,
-            }[
-                args.precision
-            ]  # todo make saving precision optional
-            if getattr(args, "only_save_trainable", False):
-                model_trainable_params = model.get_trainable_params()
-                model_trainable_params = [
-                    ".".join([_ for _ in key.split(".") if not _.startswith("_")])
-                    for key in model_trainable_params.keys()
-                ]
-                consolidated_model_state_dict = {
-                    key: val.to(save_dtype) for key, val in model.state_dict().items() if key in model_trainable_params
-                }
+    _is_fsdp = isinstance(model, FSDP)
+
+    def _save_model():
+        save_dtype = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "tf32": torch.float,
+        }[args.precision]
+
+        consolidated_model_state_dict = {
+            key: val.to(save_dtype) for key, val in model.state_dict().items()
+        }
+
+        if is_main_process:
+            # Use safe_save_pretrained to avoid HF tied-weights bugs on single GPU
+            inner = getattr(model, "module", model)
+            if hasattr(inner, "save_pretrained"):
+                # Temporarily clear _tied_weights_keys if it causes issues
+                _orig = getattr(type(inner), "_tied_weights_keys", None)
+                _inst_orig = inner.__dict__.get("_tied_weights_keys", _SENTINEL := object())
+                try:
+                    inner._tied_weights_keys = []
+                    inner.save_pretrained(save_dir, state_dict=consolidated_model_state_dict)
+                except Exception:
+                    # Restore and retry via torch.save
+                    torch.save(consolidated_model_state_dict, os.path.join(save_dir, "model.pt"))
+                    logger.warning("save_pretrained failed, saved state dict to model.pt")
+                finally:
+                    if _inst_orig is not _SENTINEL:
+                        inner._tied_weights_keys = _inst_orig
+                    elif "_tied_weights_keys" in inner.__dict__:
+                        del inner._tied_weights_keys
             else:
-                consolidated_model_state_dict = {key: val.to(save_dtype) for key, val in model.state_dict().items()}
+                torch.save(consolidated_model_state_dict, os.path.join(save_dir, "model.pt"))
 
-            if is_main_process:
-                model.save_pretrained(save_dir, state_dict=consolidated_model_state_dict)
-
+    if _is_fsdp:
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
+        ):
+            _save_model()
+    else:
         _save_model()
-        logger.info("model saved")
+    logger.info("model saved")
 
     # save optimizer
     if optimizer is not None:
-        with FSDP.state_dict_type(
-            model,
-            StateDictType.LOCAL_STATE_DICT,
-        ):
-            opt_path = os.path.join(
-                save_dir,
-                f"optimizer.{dist.get_rank():05d}-of-{dist.get_world_size():05d}.pth",
-            )
+        opt_path = os.path.join(
+            save_dir,
+            f"optimizer.{dist.get_rank():05d}-of-{dist.get_world_size():05d}.pth",
+        )
+        if _is_fsdp:
+            with FSDP.state_dict_type(model, StateDictType.LOCAL_STATE_DICT):
+                torch.save(optimizer.state_dict(), opt_path)
+        else:
             torch.save(optimizer.state_dict(), opt_path)
-            logger.info("optimizer saved")
+        logger.info("optimizer saved")
     else:
         logger.info("optimizer is None, skip saving")
 

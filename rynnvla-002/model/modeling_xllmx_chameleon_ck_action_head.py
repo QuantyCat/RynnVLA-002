@@ -349,15 +349,12 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(ChameleonForConditio
             attention_mask = None
         else:
             attention_mask = self.generate_att_mask_3(input_ids)
-        # import pdb; pdb.set_trace()
-                
+
         # explicit use_cache=False for the following
         # https://github.com/Lightning-AI/pytorch-lightning/issues/19267
         result = ChameleonForConditionalGeneration.forward(
             self, input_ids=input_ids, labels=labels, use_cache=False, attention_mask=attention_mask, **kwargs
         )
-
-        # import pdb; pdb.set_trace()
 
         c_loss = result[0]
 
@@ -367,7 +364,7 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(ChameleonForConditio
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             valid_mask = shift_labels >= 0
-            z_loss = torch.logsumexp(shift_logits, dim=-1).pow(2)[valid_mask].mean()
+            z_loss = torch.logsumexp(shift_logits.float(), dim=-1).pow(2)[valid_mask].mean()
             additional_loss_dict["z_loss"] = (z_loss, self.config.z_loss_weight)
         
         if 'output_hidden_states' in kwargs:
