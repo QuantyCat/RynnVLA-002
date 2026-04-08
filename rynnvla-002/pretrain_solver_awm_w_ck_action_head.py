@@ -64,7 +64,7 @@ def add_lora_to_model(model: nn.Module, lora_r: int, lora_alpha: int,
 
     # Freeze everything, then unfreeze LoRA and action_head
     for name, param in model.named_parameters():
-        param.requires_grad = "lora_weight_" in name or "action_head" in name
+        param.requires_grad = "lora_weight_" in name or "action_head" in name or "lm_head" in name
 
 
 class ItemProcessor(ItemProcessorBase):
