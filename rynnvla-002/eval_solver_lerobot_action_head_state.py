@@ -143,8 +143,10 @@ class Solver(PretrainSolverBase):
             0.48936170    # dim 5
         ])     
             
-        unnorm_action = (action + 1) / 2 * (max_values - min_values + 1e-8) + min_values
-        
+        action_clipped = np.clip(action, -1.0, 1.0)
+        unnorm_action = (action_clipped + 1) / 2 * (max_values - min_values + 1e-8) + min_values
+        unnorm_action = np.clip(unnorm_action, min_values, max_values)
+
         return unnorm_action
 
     def get_action_wrist_action_head_state(self, front_image, wrist_image, state, prompt):
