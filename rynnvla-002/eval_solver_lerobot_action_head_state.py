@@ -37,12 +37,12 @@ class Solver(PretrainSolverBase):
 
         (Path(args.output_dir) / "tensorboard").mkdir(parents=True, exist_ok=True)
         self.log_writer = SummaryWriter(log_dir=str(Path(args.output_dir) / "tensorboard"))
-        self.item_processor = ItemProcessor(target_size=256)
+        _rynnvla_dir = os.path.dirname(os.path.abspath(__file__))
+        _tokenizer_path = os.path.join(_rynnvla_dir, "ckpts", "chameleon", "base_model")
+        self.item_processor = ItemProcessor(tokenizer=_tokenizer_path, target_size=256)
         print('init done 000000!')
         self.his_img = []
         self.model, _ = self._model_func(self.args.resume_path)
-        DEVICE = torch.device(f"cuda:{self.args.device}")
-        self.model = self.model.to(DEVICE)
         self.model.eval()
         print('init done!')
 
@@ -92,7 +92,8 @@ class Solver(PretrainSolverBase):
             dropout=self.args.dropout,
             z_loss_weight=self.args.z_loss_weight,
             torch_dtype=torch.bfloat16,
-            device_map="cpu",
+            device_map=f"cuda:{self.args.device}",
+            ignore_mismatched_sizes=True,
         )
 
         return model, None

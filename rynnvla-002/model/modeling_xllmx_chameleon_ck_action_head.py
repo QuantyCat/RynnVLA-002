@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from .chameleon import ChameleonForConditionalGeneration
+from transformers.generation.utils import GenerationMixin
 from .configuration_xllmx_chameleon import ChameleonXLLMXConfig
 
 logger = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ class ActionHead(nn.Module):
 
 
 
-class ChameleonXLLMXForConditionalGeneration_ck_action_head(ChameleonForConditionalGeneration):
+class ChameleonXLLMXForConditionalGeneration_ck_action_head(GenerationMixin, ChameleonForConditionalGeneration):
     config_class = ChameleonXLLMXConfig
 
     def __init__(self, config):
@@ -548,9 +549,9 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(ChameleonForConditio
         self.init_input_ids = None
         
         # 生成一个token（期望为10004）
-        res = ChameleonForConditionalGeneration.generate(
-            self, input_ids=input_ids, generation_config=generation_config, 
-            output_hidden_states=True, training=False, return_dict_in_generate=True
+        res = GenerationMixin.generate(
+            self, input_ids=input_ids, generation_config=generation_config,
+            output_hidden_states=True, return_dict_in_generate=True
         )
         
         # 获取生成的token

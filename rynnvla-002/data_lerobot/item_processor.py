@@ -1,4 +1,5 @@
 import json
+import os
 import logging
 import random
 from typing import Dict, List
@@ -468,13 +469,14 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         #  todo
         #  currently still use the original image tokenizer provided by Meta rather than transformers
         #  because the transformers implementation does not contain the vae decoder
+        _tokenizer_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ckpts", "chameleon", "tokenizer")
         self.chameleon_ori_vocab = chameleon_vae_ori.VocabInfo(
-            json.load(open("../ckpts/chameleon/tokenizer/text_tokenizer.json", encoding="utf8"))["model"]["vocab"]
+            json.load(open(os.path.join(_tokenizer_dir, "text_tokenizer.json"), encoding="utf8"))["model"]["vocab"]
         )
         self.chameleon_ori_translation = chameleon_vae_ori.VocabTranslation(self.chameleon_ori_vocab, device=device)
         self.chameleon_ori_image_tokenizer = chameleon_vae_ori.ImageTokenizer(
-            cfg_path="../ckpts/chameleon/tokenizer/vqgan.yaml",
-            ckpt_path="../ckpts/chameleon/tokenizer/vqgan.ckpt",
+            cfg_path=os.path.join(_tokenizer_dir, "vqgan.yaml"),
+            ckpt_path=os.path.join(_tokenizer_dir, "vqgan.ckpt"),
             device=device,
         )
         
@@ -506,6 +508,8 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
 
         if isinstance(image, Image.Image):
             pass
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image.astype(np.uint8))
         elif isinstance(image, list):
             image = Image.fromarray(np.array(image).astype(np.uint8))
         else:
