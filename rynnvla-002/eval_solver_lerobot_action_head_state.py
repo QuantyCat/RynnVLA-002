@@ -79,10 +79,20 @@ class Solver(PretrainSolverBase):
         init_from: str,
     ) -> (ChameleonXLLMXForConditionalGeneration_ck_action_head, None):
 
-        # Only instantiate the model on rank0
-        # Other ranks will receive the model weights from rank0 during FSDP wrapping (through `sync_module_states`)
-        # See https://github.com/pytorch/pytorch/issues/105840
+        import os, sys
+        import safetensors.torch as st_torch
 
+        device = f"cuda:{self.args.device}"
+
+        # Load architecture and config from checkpoint directory onto CPU first.
+        # This avoids a double-GPU-allocation: from_pretrained puts random weights on GPU,
+        # then we'd need to push the corrected state dict onto GPU on top — OOM.
+        # Instead: build + fix weights on CPU, then move the finished model to GPU once.
+        #
+        # NOTE: from_pretrained will fail to match weights because the checkpoint was
+        # saved from SingleGPUWrapper (training wrapper), which prefixes all keys with
+        # "module.". We correct that below by reloading the state dict with the prefix stripped.
+        print(f"[Solver] Loading model architecture from {init_from} onto CPU …")
         model = ChameleonXLLMXForConditionalGeneration_ck_action_head.from_pretrained(
             init_from,
             action_dim=self.args.action_dim,
@@ -92,9 +102,62 @@ class Solver(PretrainSolverBase):
             dropout=self.args.dropout,
             z_loss_weight=self.args.z_loss_weight,
             torch_dtype=torch.bfloat16,
-            device_map=f"cuda:{self.args.device}",
+            device_map="cpu",
             ignore_mismatched_sizes=True,
         )
+
+        # Reload weights, stripping the 'module.' prefix introduced by SingleGPUWrapper.
+        ckpt_file = os.path.join(init_from, "model.safetensors")
+        if os.path.isfile(ckpt_file):
+            print(f"[Solver] Loading state dict from {ckpt_file} …")
+            sd = st_torch.load_file(ckpt_file, device="cpu")
+            if any(k.startswith("module.") for k in sd):
+                print(f"[Solver] Stripping 'module.' prefix from {len(sd)} checkpoint keys")
+                sd = {k[len("module."):]: v for k, v in sd.items()}
+
+            # LoRA weights (lora_weight_A / lora_weight_B) are stored as named parameters
+            # registered on the projection modules by add_lora_to_model. Those parameters
+            # don't exist yet on the freshly-initialised model, so we must register them
+            # before calling load_state_dict.
+            lora_A_keys = [k for k in sd if k.endswith(".lora_weight_A")]
+            if lora_A_keys:
+                _rynnvla_dir = os.path.dirname(os.path.abspath(__file__))
+                if _rynnvla_dir not in sys.path:
+                    sys.path.insert(0, _rynnvla_dir)
+                from pretrain_solver_awm_w_ck_action_head import add_lora_to_model
+                lora_r = sd[lora_A_keys[0]].shape[0]
+                # Read lora_alpha from checkpoint args.json if available, otherwise 2*r
+                args_file = os.path.join(init_from, "args.json")
+                lora_alpha = lora_r * 2
+                if os.path.isfile(args_file):
+                    import json
+                    with open(args_file) as f:
+                        saved_args = json.load(f)
+                    lora_alpha = saved_args.get("lora_alpha", lora_alpha)
+                print(f"[Solver] Registering LoRA (r={lora_r}, alpha={lora_alpha}) on {len(lora_A_keys)} projection modules")
+                add_lora_to_model(
+                    model,
+                    lora_r=lora_r,
+                    lora_alpha=lora_alpha,
+                    target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+                    lora_dropout=0.0,
+                    dtype=torch.bfloat16,
+                )
+
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            print(f"[Solver] State dict applied: {len(missing)} missing, {len(unexpected)} unexpected keys")
+            if missing:
+                print(f"[Solver]   First 5 missing: {missing[:5]}")
+            del sd  # free CPU memory before moving model to GPU
+        else:
+            print(f"[Solver] WARNING: model.safetensors not found at {ckpt_file}")
+
+        # Move to GPU only after weights are correct — single allocation, no OOM spike.
+        print(f"[Solver] Moving model to {device} …")
+        model = model.to(device)
+        torch.cuda.synchronize()
+        allocated = torch.cuda.memory_allocated(self.args.device) / 1024**3
+        print(f"[Solver] GPU memory allocated after load: {allocated:.2f} GiB")
 
         return model, None
 
@@ -156,6 +219,9 @@ class Solver(PretrainSolverBase):
         # prompt: "Place the strawberries from the table into the cup."
         # state: state of the robot, shape: (6, ) for lerobot
 
+        import numpy as _np
+        print(f"[Solver] state_rad={[round(float(x),4) for x in state]}  his_img_len={len(self.his_img)}")
+
         dis_action = get_action_Chameleon_dis_awm_ck_wrist_action_head(
                 self.model,
                 front_image,
@@ -168,8 +234,10 @@ class Solver(PretrainSolverBase):
                 state
             )
         dis_action = dis_action.cpu().float().detach().numpy()
-        
+        print(f"[Solver] raw dis_action (normalized) shape={dis_action.shape}  values={_np.round(dis_action, 4).tolist()}")
+
         dis_action_unnorm = self.unnorm_min_max(dis_action)
+        print(f"[Solver] unnorm_action shape={dis_action_unnorm.shape}  values={_np.round(dis_action_unnorm, 4).tolist()}")
 
         self.his_img = [front_image]
 
