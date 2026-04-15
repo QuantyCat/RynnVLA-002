@@ -114,8 +114,8 @@ def get_action_Chameleon_dis_awm_ck_wrist(model, cur_img, img1, task_description
     
     return dis_action
 
-def get_action_Chameleon_dis_awm_ck_wrist_action_head(model, cur_img, img1, task_description, item_processor, his_img, his_type, action_steps, state=None):
-    
+def get_action_Chameleon_dis_awm_ck_wrist_action_head(model, cur_img, img1, task_description, item_processor, his_img, his_type, action_steps, state=None, his_wrist_img=None):
+
     print("task_description: ", task_description)
     if his_type == "1h_1a_img_only":
         conv = {
@@ -137,6 +137,27 @@ def get_action_Chameleon_dis_awm_ck_wrist_action_head(model, cur_img, img1, task
                     },
                 ],
                 "image": [cur_img] + [img1],
+                "action": [],
+                "state": state,
+                }
+    elif his_type == "2h_1a_img_both_wrist_state":
+        # Matches training format generated with his=2:
+        #   <|state|><|image|><|image|><|image|><|image|>
+        #   images = [front_t-1, front_t, wrist_t-1, wrist_t]
+        # Fall back to current frame if no previous frame is available yet.
+        prev_front = his_img[-1] if his_img else cur_img
+        prev_wrist = (his_wrist_img[-1] if his_wrist_img else img1)
+        front_imgs = [prev_front, cur_img]
+        wrist_imgs = [prev_wrist, img1]
+        n_imgs = len(front_imgs) + len(wrist_imgs)  # always 4
+        conv = {
+                "conversations":[
+                    {
+                        "from": "human",
+                        "value": "What action should the robot take to " + task_description + "?" + "<|state|>" + "<|image|>" * n_imgs
+                    },
+                ],
+                "image": front_imgs + wrist_imgs,
                 "action": [],
                 "state": state,
                 }
