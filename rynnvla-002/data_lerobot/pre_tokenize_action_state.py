@@ -18,8 +18,10 @@ class ItemProcessor(FlexARItemProcessor_Action_State):
         tokenizer= "../ckpts/models--Alpha-VLLM--Lumina-mGPT-7B-768/snapshots/9624463a82ea5ce814af9b561dcd08a31082c3af",
         conv_template=Conversation,
         target_size=512,
+        deterministic_crop=False,
     ):
         super().__init__(tokenizer, conv_template, target_size)
+        self.deterministic_crop = deterministic_crop
         print(self.crop_size_list)
 
     def process_item(self, raw_item, training_mode=False, out_flatten=True):

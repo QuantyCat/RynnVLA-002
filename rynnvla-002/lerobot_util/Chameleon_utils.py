@@ -50,7 +50,7 @@ def get_action_Chameleon_dis_awm_ck(model, cur_img, task_description, item_proce
                                         do_sample=False,
                                         eos_token_id=[8710],
                                     )
-    if 'img_only' in his_type:
+    if 'img_only' in his_type or 'state' in his_type:
         input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)
     else:
         input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)[:,:-1]
@@ -104,7 +104,7 @@ def get_action_Chameleon_dis_awm_ck_wrist(model, cur_img, img1, task_description
                                         do_sample=False,
                                         eos_token_id=[8710],
                                     )
-    if 'img_only' in his_type:
+    if 'img_only' in his_type or 'state' in his_type:
         input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)
     else:
         input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)[:,:-1]
@@ -194,10 +194,10 @@ def get_action_Chameleon_dis_awm_ck_wrist_action_head(model, cur_img, img1, task
                                         do_sample=False,
                                         eos_token_id=[8710],
                                     )
-    if 'img_only' in his_type:
+    if 'img_only' in his_type or 'state' in his_type:
         input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)
     else:
-        input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)[:,:-1]
+        input_ids = torch.tensor(tokens, dtype=torch.int64, device=model.device).unsqueeze(0)[:, :-1]
     dis_action = model.generate_action_head(input_ids, generation_config)
     
     # import pdb; pdb.set_trace()

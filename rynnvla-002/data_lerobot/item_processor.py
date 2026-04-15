@@ -68,6 +68,20 @@ def center_crop(pil_image, crop_size):
     return pil_image.crop(box=(crop_left, crop_upper, crop_right, crop_lower))
 
 
+def center_crop_fixed(pil_image, crop_size):
+    while pil_image.size[0] >= 2 * crop_size[0] and pil_image.size[1] >= 2 * crop_size[1]:
+        pil_image = pil_image.resize(tuple(x // 2 for x in pil_image.size), resample=Image.BOX)
+
+    scale = max(crop_size[0] / pil_image.size[0], crop_size[1] / pil_image.size[1])
+    pil_image = pil_image.resize(tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC)
+
+    crop_left = max(0, (pil_image.size[0] - crop_size[0]) // 2)
+    crop_upper = max(0, (pil_image.size[1] - crop_size[1]) // 2)
+    crop_right = crop_left + crop_size[0]
+    crop_lower = crop_upper + crop_size[1]
+    return pil_image.crop(box=(crop_left, crop_upper, crop_right, crop_lower))
+
+
 def var_center_crop(pil_image, crop_size_list, random_top_k=1):
     w, h = pil_image.size
     rem_percent = [min(cw / w, ch / h) / max(cw / w, ch / h) for cw, ch in crop_size_list]
@@ -461,6 +475,7 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         )
 
         self.patch_size = 32
+        self.target_size = target_size
         self.crop_size_list = generate_crop_size_list((target_size // self.patch_size) ** 2, self.patch_size)
         logger.info("List of crop sizes:")
         for i in range(0, len(self.crop_size_list), 6):
@@ -518,7 +533,10 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
             # new_size = (512, 512)
             image = image.resize(new_size)
         
-        image = var_center_crop(image, crop_size_list=self.crop_size_list)
+        if getattr(self, "deterministic_crop", False):
+            image = center_crop_fixed(image, crop_size=(self.target_size, self.target_size))
+        else:
+            image = var_center_crop(image, crop_size_list=self.crop_size_list)
 
         w_grids, h_grids = image.size[0] // self.patch_size, image.size[1] // self.patch_size
 
@@ -834,4 +852,3 @@ class FlexARItemProcessor_Action_FAST(MMConvItemProcessor):
         tokens = tokens.view(h_latent_dim, w_latent_dim + 1)[:, :-1].flatten()
 
         return self.chameleon_ori_image_tokenizer.pil_from_img_toks(tokens, h_latent_dim, w_latent_dim)
-

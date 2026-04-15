@@ -39,9 +39,14 @@ class Solver(PretrainSolverBase):
         self.log_writer = SummaryWriter(log_dir=str(Path(args.output_dir) / "tensorboard"))
         _rynnvla_dir = os.path.dirname(os.path.abspath(__file__))
         _tokenizer_path = os.path.join(_rynnvla_dir, "ckpts", "chameleon", "base_model")
-        self.item_processor = ItemProcessor(tokenizer=_tokenizer_path, target_size=256)
+        self.item_processor = ItemProcessor(
+            tokenizer=_tokenizer_path,
+            target_size=256,
+            deterministic_crop=getattr(self.args, "deterministic_crop", False),
+        )
         print('init done 000000!')
         self.his_img = []
+        self.his_wrist_img = []
         self.model, _ = self._model_func(self.args.resume_path)
         self.model.eval()
         print('init done!')
@@ -60,8 +65,29 @@ class Solver(PretrainSolverBase):
         parser.add_argument("--task_suite_name", type=str, default="libero_spatial",)
         parser.add_argument("--device", default=0, type=int, help="gpu device")
         parser.add_argument("--head", type=str, default="dis", choices=["dis", "ct"])
-        parser.add_argument("--his", type=str, default="1h_1a", choices=["1h_1a", "2h_1a", "4h_1a", "2h_2a", "4h_4a", "1h_1a_img_only", "2h_1a_img_only", "4h_1a_img_only", "1h_1a_img_only_state",])
+        parser.add_argument(
+            "--his",
+            type=str,
+            default="1h_1a",
+            choices=[
+                "1h_1a",
+                "2h_1a",
+                "4h_1a",
+                "2h_2a",
+                "4h_4a",
+                "1h_1a_img_only",
+                "2h_1a_img_only",
+                "4h_1a_img_only",
+                "1h_1a_img_only_state",
+                "2h_1a_img_both_wrist_state",
+            ],
+        )
         parser.add_argument("--action_steps", default=25, type=int, help="actions to be excuted when multiple actions are generated")
+        parser.add_argument(
+            "--deterministic_crop",
+            action="store_true",
+            help="Use deterministic center crop for inference/debugging instead of random crop.",
+        )
         parser.add_argument("--half", default=0, type=int, help="which part of test set will be evaluated")
         parser.add_argument("--port", default=8000, type=int)
         parser.add_argument("--token", default='', type=str)
@@ -212,6 +238,13 @@ class Solver(PretrainSolverBase):
 
         return unnorm_action
 
+    def _history_len_from_mode(self):
+        if self.args.his.startswith("4h"):
+            return 4
+        if self.args.his.startswith("2h"):
+            return 2
+        return 1
+
     def get_action_wrist_action_head_state(self, front_image, wrist_image, state, prompt):
 
         # front_image from the front camera, type: numpy.ndarray, uint8, shape: (H, W, 3)
@@ -220,7 +253,10 @@ class Solver(PretrainSolverBase):
         # state: state of the robot, shape: (6, ) for lerobot
 
         import numpy as _np
-        print(f"[Solver] state_rad={[round(float(x),4) for x in state]}  his_img_len={len(self.his_img)}")
+        print(
+            f"[Solver] state_rad={[round(float(x),4) for x in state]}  "
+            f"his_front_len={len(self.his_img)}  his_wrist_len={len(self.his_wrist_img)}"
+        )
 
         dis_action = get_action_Chameleon_dis_awm_ck_wrist_action_head(
                 self.model,
@@ -231,7 +267,8 @@ class Solver(PretrainSolverBase):
                 self.his_img,
                 self.args.his,
                 self.args.action_steps,
-                state
+                state,
+                his_wrist_img=self.his_wrist_img,
             )
         dis_action = dis_action.cpu().float().detach().numpy()
         print(f"[Solver] raw dis_action (normalized) shape={dis_action.shape}  values={_np.round(dis_action, 4).tolist()}")
@@ -239,6 +276,8 @@ class Solver(PretrainSolverBase):
         dis_action_unnorm = self.unnorm_min_max(dis_action)
         print(f"[Solver] unnorm_action shape={dis_action_unnorm.shape}  values={_np.round(dis_action_unnorm, 4).tolist()}")
 
-        self.his_img = [front_image]
+        history_len = max(1, self._history_len_from_mode())
+        self.his_img = (self.his_img + [front_image])[-history_len:]
+        self.his_wrist_img = (self.his_wrist_img + [wrist_image])[-history_len:]
 
         return dis_action_unnorm
