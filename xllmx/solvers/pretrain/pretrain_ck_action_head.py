@@ -85,8 +85,35 @@ class SingleGPUWrapper(nn.Module):
 
 class PretrainSolverBase_ck_action_head(ABC):
 
+    @staticmethod
+    def _normalize_pretokenized_modality_args(args):
+        if getattr(args, "preprocess", None) != "true":
+            return
+
+        explicitly_enabled = [
+            key for key in ("with_state", "with_wrist", "with_action", "with_world_model")
+            if getattr(args, key, False)
+        ]
+        if explicitly_enabled:
+            raise ValueError(
+                "Raw-data modality flags are incompatible with preprocess=true. "
+                "Pretokenized runs derive modalities from data_config_train/record.json. "
+                f"Remove these flags: {', '.join(explicitly_enabled)}"
+            )
+
+        for key in ("with_state", "with_wrist", "with_action", "with_world_model"):
+            if hasattr(args, key):
+                delattr(args, key)
+
+        args.modality_config_source = "pretokenized_dataset"
+        args.modality_config_note = (
+            "For preprocess=true runs, image/state/action composition is defined by the "
+            "tokenized samples referenced by data_config_train/record.json."
+        )
+
     def __init__(self, args):
         self.args = args
+        self._normalize_pretokenized_modality_args(self.args)
         util.dist.init_distributed_mode(args)
         self.logger = self.configure_logger()
         self.logger.info(args)
