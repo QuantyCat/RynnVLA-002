@@ -12,46 +12,11 @@ from data.convertsation import Conversation
 import model.chameleon_vae_ori as chameleon_vae_ori
 from xllmx.data.data_reader import read_general
 from xllmx.data.item_processor import MMConvItemProcessor
+from data_lerobot.norm_stats import get_action_stats, get_state_stats
 
 from transformers import AutoProcessor
 
 logger = logging.getLogger(__name__)
-
-MIN_VALUES_ACTION = np.array([
-    -0.13845688,  # dim 0
-    -0.17819679,  # dim 1
-    -0.19286394,  # dim 2
-    -0.17750373,  # dim 3
-    -0.28787115,  # dim 4
-     0.00000000   # dim 5
-])
-
-MAX_VALUES_ACTION = np.array([
-    0.16925158,   # dim 0
-    0.17430055,   # dim 1
-    0.16337049,   # dim 2
-    0.20580864,   # dim 3
-    0.29125005,   # dim 4
-    0.48936170    # dim 5
-])
-
-MIN_VALUES_STATE = np.array([
-    -1.20063305,  # dim 0
-    -1.75530255,  # dim 1
-    -0.22938614,  # dim 2
-    -0.27925268,  # dim 3
-    -1.25049961,  # dim 4
-     0.00673854   # dim 5
-])
-
-MAX_VALUES_STATE = np.array([
-    1.13925886,   # dim 0
-    0.42808515,   # dim 1
-    1.68702376,   # dim 2
-    1.50520265,   # dim 3
-    1.23362172,   # dim 4
-    0.48517519    # dim 5
-])
 
 
 def center_crop(pil_image, crop_size):
@@ -375,9 +340,7 @@ class FlexARItemProcessor_Action(MMConvItemProcessor):
         return bin_centers[discretized_actions]
     
     def norm_action(self, action):
-
-        min_values = MIN_VALUES_ACTION
-        max_values = MAX_VALUES_ACTION
+        min_values, max_values = get_action_stats()
         norm_action = 2 * (action - min_values) / (max_values - min_values + 1e-8) - 1
         norm_action = np.clip(norm_action, a_min=-1, a_max=1)
         
@@ -601,8 +564,7 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
     
     
     def norm_action(self, action):
-        min_values = MIN_VALUES_ACTION
-        max_values = MAX_VALUES_ACTION
+        min_values, max_values = get_action_stats()
 
         norm_action = 2 * (action - min_values) / (max_values - min_values + 1e-8) - 1
         norm_action = np.clip(norm_action, a_min=-1, a_max=1)
@@ -611,9 +573,7 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         
     
     def norm_state(self, state):
-
-        min_values = MIN_VALUES_STATE
-        max_values = MAX_VALUES_STATE
+        min_values, max_values = get_state_stats()
 
         norm_state = 2 * (state - min_values) / (max_values - min_values + 1e-8) - 1
         norm_state = np.clip(norm_state, a_min=-1, a_max=1)

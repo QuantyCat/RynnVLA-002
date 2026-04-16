@@ -14,6 +14,7 @@ from PIL import Image
 
 from lerobot_util.Chameleon_utils import get_action_Chameleon_dis_awm_ck, get_action_Chameleon_dis_awm_ck_wrist_action_head
 from data_lerobot.pre_tokenize_action_state import ItemProcessor
+from data_lerobot.norm_stats import get_action_stats
 import time
 import xllmx.util as util
 from pathlib import Path
@@ -213,24 +214,7 @@ class Solver(PretrainSolverBase):
         model.save_pretrained(save_path, max_shard_size="10GB")
         
     def unnorm_min_max(self, action):
-
-        min_values = np.array([
-            -0.13845688,  # dim 0
-            -0.17819679,  # dim 1
-            -0.19286394,  # dim 2
-            -0.17750373,  # dim 3
-            -0.28787115,  # dim 4
-             0.00000000   # dim 5
-        ])
-
-        max_values = np.array([
-            0.16925158,   # dim 0
-            0.17430055,   # dim 1
-            0.16337049,   # dim 2
-            0.20580864,   # dim 3
-            0.29125005,   # dim 4
-            0.48936170    # dim 5
-        ])     
+        min_values, max_values = get_action_stats()
             
         action_clipped = np.clip(action, -1.0, 1.0)
         unnorm_action = (action_clipped + 1) / 2 * (max_values - min_values + 1e-8) + min_values

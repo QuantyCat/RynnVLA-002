@@ -39,14 +39,15 @@ MAX_WORKERS = 32
 def find_all_action_npy_files_fast(root_directories):
     """
     使用 glob 模式在给定的目录列表中快速查找所有 action .npy 文件。
-    目录结构假定为 <root_directory>/<any_name>/abs_action/*.npy
+    目录结构假定为 <root_directory>/<any_name>/abs_action/<chunk>/<step>.npy
     """
     npy_file_paths = []
     if not root_directories:
         return npy_file_paths
 
     print("开始使用 glob 模式快速扫描文件...")
-    glob_pattern = os.path.join('*', 'abs_action', '*', '0.npy')
+    # 统计每个 action chunk 中的所有子动作，而不只是第一个 0.npy。
+    glob_pattern = os.path.join('*', 'abs_action', '*', '*.npy')
 
     for root_dir in tqdm(root_directories, desc="扫描目录", unit="dir"):
         if not os.path.isdir(root_dir):
