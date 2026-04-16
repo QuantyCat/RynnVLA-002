@@ -1,2 +1,2 @@
 META:
-  - path: '$HOME/quantycat-positronic/my_data/training_pipeline/tokens/vla_data/record.json'
+  - path: '$HOME/quantycat-positronic/my_data/training_pipeline/tokens/vla_data/train/record.json'
