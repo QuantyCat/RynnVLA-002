@@ -544,57 +544,49 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(GenerationMixin, Cha
     
     def generate_action_head(self, input_ids, generation_config):
         """
-        Run a single forward pass to get hidden states, then use action_head
-        to predict actions.  No token generation needed — input_ids already
-        ends with the 10004 trigger token.
+        生成一个token（期望为10004），然后使用action_head预测动作
         """
         self.init_input_ids = None
-
-        # Single forward pass through the backbone only — no token generation needed.
-        # input_ids already ends with the 10004 trigger; one pass gives us everything.
-        #
-        # Using self.model (ChameleonModel backbone) instead of the full
-        # ChameleonForConditionalGeneration avoids running lm_head and avoids
-        # storing all intermediate layer outputs.
-        # torch.inference_mode() prevents gradient tracking to save memory.
-        print(f"[generate_action_head] input_ids shape={input_ids.shape}  last_token={input_ids[0, -1].item()}  seq_len={input_ids.shape[1]}")
-
-        with torch.inference_mode():
-            backbone_outputs = self.model(
-                input_ids=input_ids,
-                use_cache=False,
-                output_hidden_states=False,   # only need the final layer
-            )
-        # backbone_outputs[0] = last_hidden_state, shape [batch, seq_len, hidden_dim]
-        last_step_hidden_states = backbone_outputs[0].detach()
-
-        hs_norm = last_step_hidden_states.norm().item()
-        print(f"[generate_action_head] hidden_states shape={last_step_hidden_states.shape}  norm={hs_norm:.3f}  "
-              f"pos0={[round(x,3) for x in last_step_hidden_states[0,0,:4].tolist()]}  "
-              f"pos-1={[round(x,3) for x in last_step_hidden_states[0,-1,:4].tolist()]}")
-        if hs_norm < 1.0:
-            print("[generate_action_head] WARNING: hidden_states norm is near-zero — weights may not have loaded correctly")
-
+        
+        # 生成一个token（期望为10004）
+        res = self.generate(
+            input_ids=input_ids, generation_config=generation_config,
+            output_hidden_states=True, training=False, return_dict_in_generate=True
+        )
+        
+        # 获取生成的token
+        generated_token = res['sequences'][:, input_ids.shape[1]:]  # [batch_size, 1]
+        print(f"Generated token: {generated_token}")
+        
+        # 构建完整的input_ids（原始输入 + 生成的token）
+        full_input_ids = res['sequences']  # [batch_size, original_length + 1]
+        
+        # 获取最后一步生成token对应的hidden states
+        new_token_hidden_states_list = [
+            step_hidden_states[-1] for step_hidden_states in res['hidden_states']
+        ]
+        last_step_hidden_states = torch.cat(new_token_hidden_states_list, dim=1)
+        
         # 使用action_head预测动作
         predicted_actions, actions_flag = self.action_head(
             hidden_states=last_step_hidden_states,
-            input_ids=input_ids,
+            input_ids=full_input_ids,
             attention_mask=None,
             target_token_id=10004,
             eval=True
         )
-
+        
         # 检查是否成功预测动作
         if not actions_flag:
-            print("[generate_action_head] WARNING: action_head returned actions_flag=False (trigger token 10004 not found)")
+            print("Warning: Action prediction failed, returning zero actions")
             return torch.zeros(self.action_head.time_horizon, self.action_head.action_dim, device=input_ids.device)
-
+        
         # 将predicted_actions重新reshape为[time_horizon, action_dim]
         predicted_actions = predicted_actions.reshape(self.action_head.time_horizon, self.action_head.action_dim)
-
-        print(f"[generate_action_head] predicted_actions shape={predicted_actions.shape}")
-        print(f"[generate_action_head] predicted_actions=\n{predicted_actions}")
-
+        
+        print(f"Predicted actions shape: {predicted_actions.shape}")
+        print(f"Predicted actions: {predicted_actions}")
+        
         return predicted_actions
 
 
