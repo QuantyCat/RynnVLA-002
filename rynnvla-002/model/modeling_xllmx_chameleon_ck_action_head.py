@@ -547,11 +547,17 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(GenerationMixin, Cha
         生成一个token（期望为10004），然后使用action_head预测动作
         """
         self.init_input_ids = None
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
         
         # 生成一个token（期望为10004）
         res = self.generate(
-            input_ids=input_ids, generation_config=generation_config,
-            output_hidden_states=True, training=False, return_dict_in_generate=True
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            generation_config=generation_config,
+            pad_token_id=8710,
+            output_hidden_states=True,
+            training=False,
+            return_dict_in_generate=True,
         )
         
         # 获取生成的token
