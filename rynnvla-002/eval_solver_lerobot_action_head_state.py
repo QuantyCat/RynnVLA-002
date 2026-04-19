@@ -130,14 +130,12 @@ class Solver(PretrainSolverBase):
                 print(f"[Solver] Rewriting stale base path to local path: {desktop_fallback}")
                 base_init_from = desktop_fallback
 
-        # Build the model from the original training base checkpoint, then overlay
-        # the fine-tuned weights saved in the checkpoint directory.
-        # This avoids a double-GPU-allocation: from_pretrained puts random weights on GPU,
-        # then we'd need to push the corrected state dict onto GPU on top — OOM.
-        # Instead: build + fix weights on CPU, then move the finished model to GPU once.
+        # Match the single-GPU training path as closely as possible.
+        # Training explicitly avoided CPU->GPU `.to()` for bf16 on single GPU due to
+        # numerical instability, so prefer direct CUDA loading here as well.
         print(f"[Solver] Base model source: {base_init_from}")
         print(f"[Solver] Fine-tuned weights source: {checkpoint_dir}")
-        print(f"[Solver] Loading model architecture from {base_init_from} onto CPU …")
+        print(f"[Solver] Loading model architecture from {base_init_from} onto {device} …")
         model = ChameleonXLLMXForConditionalGeneration_ck_action_head.from_pretrained(
             base_init_from,
             action_dim=self.args.action_dim,
@@ -147,7 +145,7 @@ class Solver(PretrainSolverBase):
             dropout=self.args.dropout,
             z_loss_weight=self.args.z_loss_weight,
             torch_dtype=torch.bfloat16,
-            device_map="cpu",
+            device_map="cuda",
         )
 
         # Reload weights, stripping the 'module.' prefix introduced by SingleGPUWrapper.
@@ -188,13 +186,10 @@ class Solver(PretrainSolverBase):
             print(f"[Solver] State dict applied: {len(missing)} missing, {len(unexpected)} unexpected keys")
             if missing:
                 print(f"[Solver]   First 5 missing: {missing[:5]}")
-            del sd  # free CPU memory before moving model to GPU
+            del sd
         else:
             print(f"[Solver] WARNING: model.safetensors not found at {ckpt_file}")
 
-        # Move to GPU only after weights are correct — single allocation, no OOM spike.
-        print(f"[Solver] Moving model to {device} …")
-        model = model.to(device)
         torch.cuda.synchronize()
         allocated = torch.cuda.memory_allocated(self.args.device) / 1024**3
         print(f"[Solver] GPU memory allocated after load: {allocated:.2f} GiB")
