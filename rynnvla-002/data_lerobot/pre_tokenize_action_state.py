@@ -19,8 +19,9 @@ class ItemProcessor(FlexARItemProcessor_Action_State):
         conv_template=Conversation,
         target_size=512,
         deterministic_crop=False,
+        device="cuda",
     ):
-        super().__init__(tokenizer, conv_template, target_size)
+        super().__init__(tokenizer, conv_template, target_size, device=device)
         self.deterministic_crop = deterministic_crop
         print(self.crop_size_list)
 

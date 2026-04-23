@@ -187,7 +187,7 @@ def get_action_Chameleon_dis_awm_ck_wrist_action_head(model, cur_img, img1, task
 
     tokens.append(10004)
 
-    generation_config = GenerationConfig(max_new_tokens=2,
+    generation_config = GenerationConfig(max_new_tokens=1,
                                         max_length=model.config.max_position_embeddings,
                                         temperature=1,
                                         top_k=None,

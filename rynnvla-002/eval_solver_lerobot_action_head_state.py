@@ -44,6 +44,7 @@ class Solver(PretrainSolverBase):
             tokenizer=_tokenizer_path,
             target_size=256,
             deterministic_crop=getattr(self.args, "deterministic_crop", False),
+            device="cpu",
         )
         print('init done 000000!')
         self.his_img = []
@@ -189,6 +190,13 @@ class Solver(PretrainSolverBase):
             del sd
         else:
             print(f"[Solver] WARNING: model.safetensors not found at {ckpt_file}")
+
+        # This inference path tokenizes images via ItemProcessor and feeds input_ids
+        # into the language model; the embedded Chameleon VQ model is unused here.
+        if hasattr(model.model, "vqmodel"):
+            print("[Solver] Deleting embedded model.vqmodel to reduce GPU memory usage")
+            del model.model.vqmodel
+            torch.cuda.empty_cache()
 
         torch.cuda.synchronize()
         allocated = torch.cuda.memory_allocated(self.args.device) / 1024**3

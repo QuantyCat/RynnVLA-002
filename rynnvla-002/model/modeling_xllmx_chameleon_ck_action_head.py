@@ -8,6 +8,7 @@ from torch import nn
 
 from .chameleon import ChameleonForConditionalGeneration
 from transformers.generation.utils import GenerationMixin
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from .configuration_xllmx_chameleon import ChameleonXLLMXConfig
 
 logger = logging.getLogger(__name__)
@@ -326,13 +327,59 @@ class ChameleonXLLMXForConditionalGeneration_ck_action_head(GenerationMixin, Cha
             else:
                 attention_mask = self.generate_att_mask_3(self.init_input_ids)
                 kwargs['attention_mask'] = attention_mask.squeeze()[-1:]
-            # print(self.init_input_ids)
-            # print(kwargs['attention_mask'])
-            # import pdb; pdb.set_trace()
-            result = ChameleonForConditionalGeneration.forward(
-                self, input_ids=input_ids, **kwargs
+
+            output_attentions = kwargs.get("output_attentions", None)
+            output_hidden_states = kwargs.get("output_hidden_states", None)
+            return_dict = kwargs.get("return_dict", None)
+            pixel_values = kwargs.get("pixel_values", None)
+            position_ids = kwargs.get("position_ids", None)
+            past_key_values = kwargs.get("past_key_values", None)
+            inputs_embeds = kwargs.get("inputs_embeds", None)
+            use_cache = kwargs.get("use_cache", None)
+            cache_position = kwargs.get("cache_position", None)
+
+            output_attentions = (
+                output_attentions if output_attentions is not None else self.config.output_attentions
             )
-            return result
+            output_hidden_states = (
+                output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            )
+            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+            outputs = self.model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                attention_mask=kwargs.get("attention_mask"),
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                cache_position=cache_position,
+            )
+
+            hidden_states = outputs[0]
+            # Generation only consumes the final token logits. Projecting the full
+            # sequence to vocab and casting to fp32 is what was causing inference OOM.
+            logits = self.lm_head(hidden_states[:, -1:, :]).float()
+
+            if self.config.mask_image_logits:
+                image_tokens = self.model.vocabulary_mapping.image_tokens
+                logits[:, :, image_tokens] = torch.finfo(logits.dtype).min
+
+            if not return_dict:
+                output = (logits,) + outputs[1:]
+                return output
+
+            return CausalLMOutputWithPast(
+                loss=None,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
 
         # import pdb; pdb.set_trace()
         max_tokens = max([len(_) for _ in input_ids])
