@@ -1,4 +1,5 @@
 import math
+import os
 import pickle
 from typing import List, Tuple
 
@@ -14,7 +15,8 @@ from xllmx.solvers.pretrain import PretrainSolverBase_ck_action_head
 def add_lora_to_model(model: nn.Module, lora_r: int, lora_alpha: int,
                       target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
                       lora_dropout: float = 0.05,
-                      dtype=torch.bfloat16) -> None:
+                      dtype=torch.bfloat16,
+                      train_lm_head: bool = True) -> None:
     """
     Add LoRA parameters directly to target nn.Linear modules.
     Avoids peft's module-wrapping approach which is incompatible with FSDP use_orig_params=True.
@@ -62,9 +64,14 @@ def add_lora_to_model(model: nn.Module, lora_r: int, lora_alpha: int,
         if hasattr(module, "lora_weight_A"):
             module.register_forward_hook(make_lora_hook())
 
-    # Freeze everything, then unfreeze LoRA and action_head
+    # Freeze everything, then unfreeze LoRA/action head. lm_head is optional:
+    # it is very large and usually unnecessary for continuous action tuning.
     for name, param in model.named_parameters():
-        param.requires_grad = "lora_weight_" in name or "action_head" in name or "lm_head" in name
+        param.requires_grad = (
+            "lora_weight_" in name
+            or "action_head" in name
+            or (train_lm_head and "lm_head" in name)
+        )
 
 
 class ItemProcessor(ItemProcessorBase):
@@ -103,6 +110,27 @@ class Solver(PretrainSolverBase_ck_action_head):
         parser.add_argument("--unmask_image_logits", action="store_false", dest="mask_image_logits")
         parser.add_argument("--dropout", type=float, default=0.0)
         parser.add_argument("--z_loss_weight", type=float, default=0.0)
+        parser.add_argument("--action_sign_loss_weight", type=float, default=0.0)
+        parser.add_argument("--action_sign_eps", type=float, default=0.03)
+        parser.add_argument("--action_sign_margin", type=float, default=0.02)
+        parser.add_argument("--action_wrong_sign_loss_multiplier", type=float, default=1.0)
+        parser.add_argument("--action_wrong_sign_joint_weights", type=str, default=None)
+        parser.add_argument("--action_sign_joint_weights", type=str, default=None)
+        parser.add_argument("--action_sign_horizon_weights", type=str, default=None)
+        parser.add_argument("--action_sign_center", type=str, default="raw_zero", choices=["raw_zero", "normalized_zero"])
+        parser.add_argument("--action_quiet_loss_weight", type=float, default=0.0)
+        parser.add_argument("--action_quiet_eps", type=float, default=0.01)
+        parser.add_argument("--action_quiet_pred_eps", type=float, default=0.01)
+        parser.add_argument("--action_quiet_joint_weights", type=str, default=None)
+        parser.add_argument("--action_quiet_horizon_weights", type=str, default=None)
+        parser.add_argument("--action_motion_loss_weight", type=float, default=0.0)
+        parser.add_argument("--action_motion_eps", type=float, default=0.08)
+        parser.add_argument("--action_motion_joint_weights", type=str, default=None)
+        parser.add_argument("--action_motion_horizon_weights", type=str, default=None)
+        parser.add_argument("--action_magnitude_loss_weight", type=float, default=0.0)
+        parser.add_argument("--action_magnitude_eps", type=float, default=0.08)
+        parser.add_argument("--action_magnitude_joint_weights", type=str, default=None)
+        parser.add_argument("--action_magnitude_horizon_weights", type=str, default=None)
         parser.add_argument("--model_size", type=str, default="7B", choices=["7B", "34B"])
         parser.add_argument("--action_dim", type=int, default=7)
         parser.add_argument("--time_horizon", type=int, default=5)
@@ -115,12 +143,31 @@ class Solver(PretrainSolverBase_ck_action_head):
         parser.add_argument("--tokenizer_path", type=str, default="../ckpts/models--Alpha-VLLM--Lumina-mGPT-7B-768/snapshots/9624463a82ea5ce814af9b561dcd08a31082c3af")
         parser.add_argument("--lora_r", type=int, default=0, help="LoRA rank (0 = disabled, use full fine-tuning)")
         parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA scaling factor")
+        parser.add_argument("--train_lm_head", action="store_true", help="Keep lm_head trainable in LoRA mode")
+        parser.add_argument(
+            "--action_head_detach_hidden_states",
+            action="store_true",
+            help="Detach transformer hidden states before the continuous action head",
+        )
+        parser.add_argument(
+            "--action_head_loss_routing",
+            default="default",
+            choices=["default", "sign_to_backbone"],
+            help="Route selected action losses through attached hidden states",
+        )
         return parser
 
     def _model_func(
         self,
         init_from: str,
     ) -> (ChameleonXLLMXForConditionalGeneration_ck_action_head, None):
+        checkpoint_model_path = os.path.join(init_from, "model.safetensors")
+        manual_lora_resume = (
+            self.dp_rank == 0
+            and getattr(self.args, "lora_r", 0) > 0
+            and os.path.isfile(checkpoint_model_path)
+        )
+        model_init_from = self.args.init_from if manual_lora_resume else init_from
 
         # Only instantiate the model on rank0
         # Other ranks will receive the model weights from rank0 during FSDP wrapping (through `sync_module_states`)
@@ -131,26 +178,72 @@ class Solver(PretrainSolverBase_ck_action_head):
             # For multi-GPU, keep CPU loading so FSDP can sync weights across ranks.
             _device_map = "cuda" if self.dp_world_size == 1 else "cpu"
             model = ChameleonXLLMXForConditionalGeneration_ck_action_head.from_pretrained(
-                init_from,
+                model_init_from,
                 action_dim=self.args.action_dim,
                 time_horizon=self.args.time_horizon,
                 max_position_embeddings=self.args.max_seq_len,
                 mask_image_logits=self.args.mask_image_logits,
                 dropout=self.args.dropout,
                 z_loss_weight=self.args.z_loss_weight,
+                action_sign_loss_weight=self.args.action_sign_loss_weight,
+                action_sign_eps=self.args.action_sign_eps,
+                action_sign_margin=self.args.action_sign_margin,
+                action_wrong_sign_loss_multiplier=self.args.action_wrong_sign_loss_multiplier,
+                action_wrong_sign_joint_weights=self.args.action_wrong_sign_joint_weights,
+                action_sign_joint_weights=self.args.action_sign_joint_weights,
+                action_sign_horizon_weights=self.args.action_sign_horizon_weights,
+                action_sign_center=self.args.action_sign_center,
+                action_quiet_loss_weight=self.args.action_quiet_loss_weight,
+                action_quiet_eps=self.args.action_quiet_eps,
+                action_quiet_pred_eps=self.args.action_quiet_pred_eps,
+                action_quiet_joint_weights=self.args.action_quiet_joint_weights,
+                action_quiet_horizon_weights=self.args.action_quiet_horizon_weights,
+                action_motion_loss_weight=self.args.action_motion_loss_weight,
+                action_motion_eps=self.args.action_motion_eps,
+                action_motion_joint_weights=self.args.action_motion_joint_weights,
+                action_motion_horizon_weights=self.args.action_motion_horizon_weights,
+                action_magnitude_loss_weight=self.args.action_magnitude_loss_weight,
+                action_magnitude_eps=self.args.action_magnitude_eps,
+                action_magnitude_joint_weights=self.args.action_magnitude_joint_weights,
+                action_magnitude_horizon_weights=self.args.action_magnitude_horizon_weights,
+                action_head_detach_hidden_states=self.args.action_head_detach_hidden_states,
+                action_head_loss_routing=self.args.action_head_loss_routing,
                 torch_dtype=torch.bfloat16,
                 device_map=_device_map,
             )
         else:
             with init_empty_weights():
                 config = ChameleonXLLMXConfig.from_pretrained(
-                    init_from,
+                    model_init_from,
                     action_dim=self.args.action_dim,
                     time_horizon=self.args.time_horizon,
                     max_position_embeddings=self.args.max_seq_len,
                     mask_image_logits=self.args.mask_image_logits,
                     dropout=self.args.dropout,
                     z_loss_weight=self.args.z_loss_weight,
+                    action_sign_loss_weight=self.args.action_sign_loss_weight,
+                    action_sign_eps=self.args.action_sign_eps,
+                    action_sign_margin=self.args.action_sign_margin,
+                    action_wrong_sign_loss_multiplier=self.args.action_wrong_sign_loss_multiplier,
+                    action_wrong_sign_joint_weights=self.args.action_wrong_sign_joint_weights,
+                    action_sign_joint_weights=self.args.action_sign_joint_weights,
+                    action_sign_horizon_weights=self.args.action_sign_horizon_weights,
+                    action_sign_center=self.args.action_sign_center,
+                    action_quiet_loss_weight=self.args.action_quiet_loss_weight,
+                    action_quiet_eps=self.args.action_quiet_eps,
+                    action_quiet_pred_eps=self.args.action_quiet_pred_eps,
+                    action_quiet_joint_weights=self.args.action_quiet_joint_weights,
+                    action_quiet_horizon_weights=self.args.action_quiet_horizon_weights,
+                    action_motion_loss_weight=self.args.action_motion_loss_weight,
+                    action_motion_eps=self.args.action_motion_eps,
+                    action_motion_joint_weights=self.args.action_motion_joint_weights,
+                    action_motion_horizon_weights=self.args.action_motion_horizon_weights,
+                    action_magnitude_loss_weight=self.args.action_magnitude_loss_weight,
+                    action_magnitude_eps=self.args.action_magnitude_eps,
+                    action_magnitude_joint_weights=self.args.action_magnitude_joint_weights,
+                    action_magnitude_horizon_weights=self.args.action_magnitude_horizon_weights,
+                    action_head_detach_hidden_states=self.args.action_head_detach_hidden_states,
+                    action_head_loss_routing=self.args.action_head_loss_routing,
                     torch_dtype=torch.bfloat16,
                 )
                 model = ChameleonXLLMXForConditionalGeneration_ck_action_head(config)
@@ -165,6 +258,24 @@ class Solver(PretrainSolverBase_ck_action_head):
                 target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
                 lora_dropout=0.05,
                 dtype=torch.bfloat16,
+                train_lm_head=getattr(self.args, "train_lm_head", False),
+            )
+
+        if manual_lora_resume:
+            from safetensors.torch import load_file
+
+            checkpoint_state = {
+                key.removeprefix("module."): value
+                for key, value in load_file(checkpoint_model_path, device="cpu").items()
+            }
+            missing_keys, unexpected_keys = model.load_state_dict(checkpoint_state, strict=False)
+            if unexpected_keys:
+                raise RuntimeError(f"Unexpected keys while loading {checkpoint_model_path}: {unexpected_keys[:20]}")
+            self.logger.info(
+                "Loaded LoRA-aware checkpoint model state from %s with %d missing and %d unexpected keys",
+                checkpoint_model_path,
+                len(missing_keys),
+                len(unexpected_keys),
             )
 
         return model, None

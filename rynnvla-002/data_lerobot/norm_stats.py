@@ -1,5 +1,6 @@
 import os
 import re
+import ast
 from functools import lru_cache
 
 import numpy as np
@@ -43,6 +44,7 @@ DEFAULT_STATE_MAX = np.array([
 
 ACTION_STATS_ENV = "RYNNVLA_ACTION_STATS_FILE"
 STATE_STATS_ENV = "RYNNVLA_STATE_STATS_FILE"
+ACTION_NORM_SCALES_ENV = "RYNNVLA_ACTION_NORM_SCALES"
 
 
 def _parse_stats_file(path: str):
@@ -73,6 +75,23 @@ def _load_stats(path_env: str, default_min: np.ndarray, default_max: np.ndarray,
     return _parse_stats_file(path)
 
 
+def _parse_scales(value: str, action_dim: int) -> np.ndarray:
+    if not value.strip():
+        return np.ones(action_dim, dtype=np.float32)
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        parsed = [part.strip() for part in value.split(",") if part.strip()]
+    scales = np.asarray([float(part) for part in parsed], dtype=np.float32)
+    if scales.shape != (action_dim,):
+        raise ValueError(
+            f"{ACTION_NORM_SCALES_ENV} must contain {action_dim} values, got {scales.size}"
+        )
+    if not np.isfinite(scales).all() or np.any(scales <= 0):
+        raise ValueError(f"{ACTION_NORM_SCALES_ENV} values must be finite and positive: {scales}")
+    return scales
+
+
 @lru_cache(maxsize=1)
 def get_action_stats():
     return _load_stats(ACTION_STATS_ENV, DEFAULT_ACTION_MIN, DEFAULT_ACTION_MAX, "action")
@@ -81,3 +100,33 @@ def get_action_stats():
 @lru_cache(maxsize=1)
 def get_state_stats():
     return _load_stats(STATE_STATS_ENV, DEFAULT_STATE_MIN, DEFAULT_STATE_MAX, "state")
+
+
+@lru_cache(maxsize=1)
+def get_action_norm_scales():
+    action_dim = int(get_action_stats()[0].shape[0])
+    return _parse_scales(os.environ.get(ACTION_NORM_SCALES_ENV, ""), action_dim)
+
+
+@lru_cache(maxsize=1)
+def get_action_zero_norm():
+    min_values, max_values = get_action_stats()
+    return 2.0 * (0.0 - min_values) / (max_values - min_values + 1e-8) - 1.0
+
+
+def apply_action_norm_scales(norm_action):
+    scales = get_action_norm_scales()
+    if np.allclose(scales, 1.0):
+        return norm_action
+    zero_norm = get_action_zero_norm()
+    scaled = zero_norm + (np.asarray(norm_action) - zero_norm) * scales
+    return np.clip(scaled, -1.0, 1.0)
+
+
+def invert_action_norm_scales(norm_action):
+    scales = get_action_norm_scales()
+    if np.allclose(scales, 1.0):
+        return norm_action
+    zero_norm = get_action_zero_norm()
+    unscaled = zero_norm + (np.asarray(norm_action) - zero_norm) / scales
+    return np.clip(unscaled, -1.0, 1.0)

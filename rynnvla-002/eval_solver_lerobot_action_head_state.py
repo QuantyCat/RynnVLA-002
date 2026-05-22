@@ -14,7 +14,7 @@ from PIL import Image
 
 from lerobot_util.Chameleon_utils import get_action_Chameleon_dis_awm_ck, get_action_Chameleon_dis_awm_ck_wrist_action_head
 from data_lerobot.pre_tokenize_action_state import ItemProcessor
-from data_lerobot.norm_stats import get_action_stats
+from data_lerobot.norm_stats import get_action_stats, invert_action_norm_scales
 import time
 import xllmx.util as util
 from pathlib import Path
@@ -40,11 +40,12 @@ class Solver(PretrainSolverBase):
         self.log_writer = SummaryWriter(log_dir=str(Path(args.output_dir) / "tensorboard"))
         _rynnvla_dir = os.path.dirname(os.path.abspath(__file__))
         _tokenizer_path = os.path.join(_rynnvla_dir, "ckpts", "chameleon", "base_model")
+        tokenizer_device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
         self.item_processor = ItemProcessor(
             tokenizer=_tokenizer_path,
             target_size=256,
             deterministic_crop=getattr(self.args, "deterministic_crop", False),
-            device="cpu",
+            device=tokenizer_device,
         )
         print('init done 000000!')
         self.his_img = []
@@ -205,7 +206,8 @@ class Solver(PretrainSolverBase):
         return model, None
 
     def _item_processor_func(self) -> ItemProcessor:
-        return ItemProcessor(target_size=288)
+        tokenizer_device = f"cuda:{self.args.device}" if torch.cuda.is_available() else "cpu"
+        return ItemProcessor(target_size=288, device=tokenizer_device)
 
     def _make_and_save_starting_point(self, save_path: str) -> None:
 
@@ -232,7 +234,7 @@ class Solver(PretrainSolverBase):
     def unnorm_min_max(self, action):
         min_values, max_values = get_action_stats()
             
-        action_clipped = np.clip(action, -1.0, 1.0)
+        action_clipped = invert_action_norm_scales(np.clip(action, -1.0, 1.0))
         unnorm_action = (action_clipped + 1) / 2 * (max_values - min_values + 1e-8) + min_values
         unnorm_action = np.clip(unnorm_action, min_values, max_values)
 

@@ -18,8 +18,10 @@ class ItemProcessor(FlexARItemProcessor_Action_State):
         tokenizer= "../ckpts/models--Alpha-VLLM--Lumina-mGPT-7B-768/snapshots/9624463a82ea5ce814af9b561dcd08a31082c3af",
         conv_template=Conversation,
         target_size=512,
+        deterministic_crop=False,
     ):
         super().__init__(tokenizer, conv_template, target_size)
+        self.deterministic_crop = deterministic_crop
         print(self.crop_size_list)
 
     def process_item(self, raw_item, training_mode=False, out_flatten=True):
@@ -67,9 +69,14 @@ if __name__ == "__main__":
         "--tokenizer",
         type=str,
     )
+    parser.add_argument("--deterministic_crop", action="store_true")
     args = parser.parse_args()
 
-    item_processor = ItemProcessor(target_size=args.target_size, tokenizer=args.tokenizer)
+    item_processor = ItemProcessor(
+        target_size=args.target_size,
+        tokenizer=args.tokenizer,
+        deterministic_crop=args.deterministic_crop,
+    )
 
     with open(args.in_filename) as f:
         ori_contents = json.load(f)

@@ -909,6 +909,16 @@ class PretrainSolverBase_ck_action_head(ABC):
 
         return examples, labels
 
+    def _update_action_debug_metrics(self, metric_logger):
+        model = getattr(self.model, "module", self.model)
+        debug = getattr(model, "action_loss_debug", None)
+        if not debug:
+            return
+        for key, value in debug.items():
+            if torch.is_tensor(value):
+                value = value.detach().float().mean().item()
+            metric_logger.update(**{key: value})
+
     
     def train_one_epoch_awm(
         self,
@@ -984,10 +994,13 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
                 c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct  = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, att_mask=True)
+            self._update_action_debug_metrics(metric_logger)
             if loss_ct == 0:
                 continue
             # print('-----------------', self.args.loss_ct_weights)
-            loss = c_loss + self.args.loss_ct_weights * loss_ct
+            weighted_loss_ct = self.args.loss_ct_weights * loss_ct
+            ratio_ct_to_lm = weighted_loss_ct / (c_loss.detach() + 1e-8)
+            loss = c_loss + weighted_loss_ct
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight
             loss_value = loss.item()
@@ -1026,6 +1039,8 @@ class PretrainSolverBase_ck_action_head(ABC):
 
             metric_logger.update(closs=c_loss_value)
             metric_logger.update(loss_ct=loss_ct_value)
+            metric_logger.update(weighted_loss_ct=weighted_loss_ct.item())
+            metric_logger.update(ratio_ct_to_lm=ratio_ct_to_lm.item())
             metric_logger.update(**{key: val[0].item() for key, val in additional_loss_dict.items()})
             lr = self.optimizer.param_groups[0]["lr"]
             metric_logger.update(lr=lr)
@@ -1145,12 +1160,15 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct  = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=False)
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct  = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)
+            self._update_action_debug_metrics(metric_logger)
 
             # if loss_ct == 0:
             #     print('2222222222222', c_loss, loss_ct)
             #     continue
-            loss = c_loss + self.args.loss_ct_weights * loss_ct
+            weighted_loss_ct = self.args.loss_ct_weights * loss_ct
+            ratio_ct_to_lm = weighted_loss_ct / (c_loss.detach() + 1e-8)
+            loss = c_loss + weighted_loss_ct
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight
             loss_value = loss.item()
@@ -1189,6 +1207,8 @@ class PretrainSolverBase_ck_action_head(ABC):
 
             metric_logger.update(closs=c_loss_value)
             metric_logger.update(loss_ct=loss_ct_value)
+            metric_logger.update(weighted_loss_ct=weighted_loss_ct.item())
+            metric_logger.update(ratio_ct_to_lm=ratio_ct_to_lm.item())
             metric_logger.update(**{key: val[0].item() for key, val in additional_loss_dict.items()})
             lr = self.optimizer.param_groups[0]["lr"]
             metric_logger.update(lr=lr)
@@ -1378,7 +1398,8 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, att_mask=True)            
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, att_mask=True)            
+            self._update_action_debug_metrics(metric_logger)
             loss = c_loss
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight
@@ -1490,7 +1511,8 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)            
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)            
+            self._update_action_debug_metrics(metric_logger)
             loss = c_loss
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight
@@ -1600,7 +1622,8 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, att_mask=True)
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, att_mask=True)
+            self._update_action_debug_metrics(metric_logger)
             loss = c_loss
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight
@@ -1712,7 +1735,8 @@ class PretrainSolverBase_ck_action_head(ABC):
                 "fp32": contextlib.nullcontext(),
                 "tf32": contextlib.nullcontext(),
             }[self.args.precision]:
-                c_loss, additional_loss_dict, logits, hidden_states, labels_c = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)
+                c_loss, additional_loss_dict, logits, hidden_states, labels_c, predicted_actions, loss_ct = self.model(input_ids=examples, labels=labels, output_hidden_states=True, training=True, loss_weights=loss_weights, att_mask=True)
+            self._update_action_debug_metrics(metric_logger)
             loss = c_loss
             for add_loss, weight in additional_loss_dict.values():
                 loss = loss + add_loss * weight

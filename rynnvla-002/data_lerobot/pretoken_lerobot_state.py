@@ -14,20 +14,22 @@ except ImportError:
     HAS_TQDM = False
 
 
-def run_script(rank, all_ranks, input_file, output_dir, resolution, tokenizer_path, log_dir):
+def run_script(rank, all_ranks, input_file, output_dir, resolution, tokenizer_path, log_dir, deterministic_crop):
     num_available_gpus = torch.cuda.device_count()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank % num_available_gpus)
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
+    deterministic_arg = " --deterministic_crop" if deterministic_crop else ""
     command = (f"{sys.executable} -u pre_tokenize_action_state_local.py "
                f"--splits={all_ranks} "
                f"--rank={rank} "
                f"--in_filename {input_file} "
                f"--out_dir {output_dir} "
                f"--target_size {resolution} "
-               f"--tokenizer {tokenizer_path} "
+               f"--tokenizer {tokenizer_path}"
+               f"{deterministic_arg} "
                f"> {log_dir}/worker_{rank}.log 2>&1")
 
     os.system(command)
@@ -85,6 +87,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--resolution', type=int, required=True)
     parser.add_argument('--tokenizer_path', type=str, required=True)
+    parser.add_argument("--deterministic_crop", action="store_true")
     args = parser.parse_args()
 
     with open(args.input_file) as f:
@@ -95,10 +98,23 @@ if __name__ == "__main__":
 
     log_dir = os.path.join(args.output_dir, "logs")
     print(f"Starting {all_ranks} workers ({num_gpus} GPU(s)). Logs in {log_dir}/")
+    print(f"deterministic_crop={args.deterministic_crop}")
 
     processes = []
     for i in range(all_ranks):
-        p = Process(target=run_script, args=(i, all_ranks, args.input_file, args.output_dir, args.resolution, args.tokenizer_path, log_dir))
+        p = Process(
+            target=run_script,
+            args=(
+                i,
+                all_ranks,
+                args.input_file,
+                args.output_dir,
+                args.resolution,
+                args.tokenizer_path,
+                log_dir,
+                args.deterministic_crop,
+            ),
+        )
         p.start()
         processes.append(p)
 

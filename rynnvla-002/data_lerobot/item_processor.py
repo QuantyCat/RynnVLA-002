@@ -12,7 +12,7 @@ from data.convertsation import Conversation
 import model.chameleon_vae_ori as chameleon_vae_ori
 from xllmx.data.data_reader import read_general
 from xllmx.data.item_processor import MMConvItemProcessor
-from data_lerobot.norm_stats import get_action_stats, get_state_stats
+from data_lerobot.norm_stats import apply_action_norm_scales, get_action_stats, get_state_stats
 
 from transformers import AutoProcessor
 
@@ -322,6 +322,7 @@ class FlexARItemProcessor_Action(MMConvItemProcessor):
         action = np.array(action)
         # action = np.clip(action, a_min=float(self.min_action), a_max=float(self.max_action))
         norm_action = self.norm_action(action)
+        norm_action = apply_action_norm_scales(norm_action)
         discretized_action = np.digitize(norm_action, self.bins) + self.token2id(self.action_start_token) + 1
         result_toks = [
             self.token2id(self.action_start_token),
@@ -485,16 +486,15 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         # print(image)
 
         if isinstance(image, Image.Image):
-            pass
+            image = image.convert("RGB")
         elif isinstance(image, np.ndarray):
-            image = Image.fromarray(image.astype(np.uint8))
+            image = Image.fromarray(image.astype(np.uint8)).convert("RGB")
         elif isinstance(image, list):
-            image = Image.fromarray(np.array(image).astype(np.uint8))
+            image = Image.fromarray(np.array(image).astype(np.uint8)).convert("RGB")
         else:
-            image = Image.open(read_general(image))
-            new_size = (256, 256)
-            # new_size = (512, 512)
-            image = image.resize(new_size)
+            image = Image.open(read_general(image)).convert("RGB")
+
+        image = image.resize((self.target_size, self.target_size))
         
         if getattr(self, "deterministic_crop", False):
             image = center_crop_fixed(image, crop_size=(self.target_size, self.target_size))
@@ -536,6 +536,7 @@ class FlexARItemProcessor_Action_State(MMConvItemProcessor):
         action = np.array(action)
         # action = np.clip(action, a_min=float(self.min_action), a_max=float(self.max_action))
         norm_action = self.norm_action(action)
+        norm_action = apply_action_norm_scales(norm_action)
         discretized_action = np.digitize(norm_action, self.bins) + self.token2id(self.action_start_token) + 1
         result_toks = [
             self.token2id(self.action_start_token),
